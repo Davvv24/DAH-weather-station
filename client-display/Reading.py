@@ -4,7 +4,6 @@ from datetime import datetime
 import board
 import busio
 import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
-import asyncio
 
 class Reading(object):
 	
