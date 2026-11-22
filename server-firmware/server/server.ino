@@ -38,9 +38,9 @@ public:
 
   void readTemperatureF() {
     temp_f = dht_.getTemperature(false);
-    if (dht22.getLastError() != dht22.OK) {
+    if (dht_.getLastError() != dht_.OK) {
     Serial.print("last error :");
-    Serial.println(dht22.getLastError());
+    Serial.println(dht_.getLastError());
     }
     Serial.print("t=");Serial.println(temp_f,1);Serial.println();
     return;
@@ -48,21 +48,22 @@ public:
 
   void readHumidity() {
     humidity = dht_.getHumidity();
-    if (dht22.getLastError() != dht22.OK) {
+    if (dht_.getLastError() != dht_.OK) {
     Serial.print("last error :");
-    Serial.println(dht22.getLastError());
+    Serial.println(dht_.getLastError());
     }
     Serial.print("h=");Serial.print(humidity,1);Serial.println();
     return;
   }
 
   void readTemperatureC2() {
-    temp_c2 = ds_sensor_.requestTemperatures();
+    ds_sensor_.requestTemperatures();
+    temp_c2 = ds_sensor_.getTempCByIndex(0);
     Serial.print("Temperature: ");Serial.print(temp_c2);Serial.print("deg C");Serial.println();
     return;
   }
 };
-}
+
 
 // Global HTTP server on port 80 and weather station instance
 ESP8266WebServer server(80);
