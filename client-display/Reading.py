@@ -1,45 +1,76 @@
 from urllib.request import urlopen as uo
+from http.client import HTTPException
+import logging
 import time
 from datetime import datetime
+from threading import Event, Lock, Thread
 import board
 import busio
 import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
 from matplotlib import pyplot as plt
 
 class Reading(object):
-	
-	temp = "Not read"
-	temp2 = "Not read"
-	hum = "Not read"
-	
+
 	def __init__(self, url: str = "http://192.168.0.7") -> None:
 		self.base_url = url
 		self.history = []
-	
-	def getTemp(self) -> None:
-		with uo(self.base_url + "/temp", timeout = 5) as response:
-			self.temp = float(response.read().decode("utf-8").strip().split(" ")[-1])
-	
-	def getTemp2(self) -> None:
-		with uo(self.base_url + "/temp2", timeout = 5) as response:
-			self.temp2 = float(response.read().decode("utf-8").strip().split(" ")[-1])
-	
-	def getHumidity(self) -> None:
-		with uo(self.base_url + "/humidity", timeout = 5) as response:
-			self.hum = response.read().decode("utf-8").strip().split(" ")[-1]
-			
-	def grabTempF(self) -> str:
-		return str(self.temp) + "F"
-	
-	def grabTempC(self) -> str:
-		tempC = (self.temp - 32)*(5/9)
-		return f"{tempC:.1f}"
-		
-	def grabTemp2(self) -> str:
-		return f"{float(self.temp2):.2f}"
-		
-	def grabHumidity(self) -> str:
-		return self.hum
+		self.history_lock = Lock()
+		self.failed = False
+
+	def readValue(self, path, label, minimum, maximum, suffix="") -> float:
+		with uo(self.base_url + path, timeout=5) as response:
+			if response.status != 200:
+				raise ValueError(f"{path}: HTTP {response.status}")
+			body = response.read().decode("utf-8").strip()
+
+		prefix = label + ":"
+		if not body.startswith(prefix) or not body.endswith(suffix):
+			raise ValueError(f"{path}: unexpected response")
+		payload = body[len(prefix):]
+		if suffix:
+			payload = payload[:-len(suffix)]
+		try:
+			value = float(payload)
+		except ValueError as error:
+			raise ValueError(f"{path}: invalid number") from error
+		if not minimum <= value <= maximum:
+			raise ValueError(f"{path}: reading outside sensor range")
+		return value
+
+	def getTemp(self) -> float:
+		fahrenheit = self.readValue("/temp", "Temperature", -40.0, 176.0)
+		return (fahrenheit - 32.0) * (5.0 / 9.0)
+
+	def getTemp2(self) -> float:
+		return self.readValue("/temp2", "Temperature 2", -55.0, 125.0)
+
+	def getHumidity(self) -> float:
+		return self.readValue("/humidity", "Humidity", 0.0, 100.0, "%")
+
+	def fetchSample(self) -> tuple:
+		temp = self.getTemp()
+		temp2 = self.getTemp2()
+		humidity = self.getHumidity()
+		return datetime.now(), temp, temp2, humidity
+
+	def getSamples(self, stop: Event) -> None:
+		while not stop.is_set():
+			try:
+				sample = self.fetchSample()
+				if stop.is_set():
+					return
+				timestamp, temp, temp2, humidity = sample
+				with open("heatgun_readings.csv", mode="a") as csv_file:
+					csv_file.write(f"{timestamp:%H:%M:%S},{temp:.1f},{temp2:.2f},{humidity:.2f}%\n")
+			except (OSError, HTTPException, ValueError) as error:
+				with self.history_lock:
+					self.failed = True
+				logging.warning("Reading failed: %s", error)
+			else:
+				with self.history_lock:
+					self.history.append(sample)
+					self.failed = False
+			stop.wait(1)
 
 class Display(object):
 	
@@ -49,25 +80,33 @@ class Display(object):
 		lcd_rows = 2
 		i2c = busio.I2C(board.SCL, board.SDA)
 		self.lcd = character_lcd.Character_LCD_RGB_I2C(i2c, lcd_columns, lcd_rows)
-		self.counter = 0
 		self.figure = None
 		self.up_pressed = False
+		self.last_message = ""
 	
 	def refresh(self) -> None:
-		self.sensor.getTemp()
-		self.sensor.getTemp2()
-		self.sensor.getHumidity()
-		temp = self.sensor.grabTempC()
-		temp2 = self.sensor.grabTemp2()
-		humidity = self.sensor.grabHumidity()
-		timestamp = datetime.now()
-		clock = timestamp.strftime('%H:%M:%S')
-		self.sensor.history.append((timestamp, temp, temp2, humidity))
-		
-		self.lcd.color = [1+(float(temp)>20),0,1+(float(temp)<25)]	 	
-		self.lcd.message = f"{temp}C {temp2}C\n{humidity}  {clock}"
-		with open("heatgun_readings.csv", mode = 'a') as f:
-			f.write(f"{clock},{temp},{temp2},{humidity}\n")
+		with self.sensor.history_lock:
+			sample = self.sensor.history[-1] if self.sensor.history else None
+			failed = self.sensor.failed
+
+		clock = datetime.now().strftime("%H:%M:%S")
+		if sample is None:
+			top = "No valid data" if failed else "Waiting for data"
+			bottom = clock
+		else:
+			_, temp, temp2, humidity = sample
+			top = f"{temp:.1f}C {temp2:.2f}C"
+			humidity_text = f"{humidity:.2f}%"
+			gap = ("*" if failed else " ").rjust(8 - len(humidity_text))
+			bottom = f"{humidity_text}{gap}{clock}"
+
+		message = f"{top:<16}\n{bottom:<16}"
+		if message != self.last_message:
+			if sample is not None:
+				temp = round(temp, 1)
+				self.lcd.color = [1 + (temp > 20), 0, 1 + (temp < 25)]
+			self.lcd.message = message
+			self.last_message = message
 
 		if self.figure is not None:
 			self.updatePlot()
@@ -84,18 +123,21 @@ class Display(object):
 		humidity_axis.set_ylabel("Humidity (%)")
 		humidity_axis.set_xlabel("Elapsed time (s)")
 		self.figure.tight_layout()
+		self.plot_count = 0
 		self.updatePlot()
 		plt.show(block=False)
 
-	# Updates the existing plot when called
 	def updatePlot(self) -> None:
-		if not self.sensor.history:
-			return
-		times, temp, temp2, humidity = zip(*self.sensor.history)
+		with self.sensor.history_lock:
+			if self.plot_count == len(self.sensor.history):
+				return
+			history = self.sensor.history.copy()
+		self.plot_count = len(history)
+		times, temp, temp2, humidity = zip(*history)
 		elapsed = [(timestamp - times[0]).total_seconds() for timestamp in times]
-		self.plot_lines[0].set_data(elapsed, [float(value) for value in temp])
-		self.plot_lines[1].set_data(elapsed, [float(value) for value in temp2])
-		self.plot_lines[2].set_data(elapsed, [float(value.rstrip("%")) for value in humidity])
+		self.plot_lines[0].set_data(elapsed, temp)
+		self.plot_lines[1].set_data(elapsed, temp2)
+		self.plot_lines[2].set_data(elapsed, humidity)
 		for axis in self.figure.axes:
 			axis.relim()
 			axis.autoscale_view()
@@ -114,24 +156,24 @@ class Display(object):
 			self.openPlot()
 		self.up_pressed = up
 
-	# Check the buttons constantly until it's time to update the readings again
-	def waitNextReading(self) -> None:
-		deadline = time.time() + 1
-		while time.time() < deadline:
-			self.checkButtons()
-			delay = min(0.05, deadline - time.time()) # makes it wait the exact missing time 
-			if delay <= 0:
-				break
-			if self.figure is None:
-				time.sleep(delay)
-			else:
-				plt.pause(delay)
-
 
 if __name__ == "__main__":
 	room = Reading()
 	screen = Display(room)
+	stop = Event()
+	worker = Thread(target=room.getSamples, args=(stop,))
+	worker.start()
 
-	while True:
-		screen.refresh()
-		screen.waitNextReading()
+	try:
+		while worker.is_alive():
+			screen.checkButtons()
+			screen.refresh()
+			if screen.figure is None:
+				time.sleep(0.05)
+			else:
+				plt.pause(0.05)
+	except KeyboardInterrupt:
+		pass
+	finally:
+		stop.set()
+		worker.join()

@@ -7,6 +7,7 @@
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 #include <DHT22.h>
+#include <math.h>
 
 #include "OneWire.h"
 #include "DallasTemperature.h"
@@ -17,9 +18,6 @@
 
 const char* ssid     = "DAH-lab";         // Hotspot name
 const char* password = "AbbeyRoadAlbum";  // Hotspot password
-float humidity, temp_f, temp_c2;          // Values read from sensor
-String webString="";                      // String to display on webserver
- 
 class WeatherSensors {
 private:
   DHT22 dht_;
@@ -36,31 +34,33 @@ public:
     ds_sensor_.begin();
   }
 
-  void readTemperatureF() {
-    temp_f = dht_.getTemperature(false);
+  float readTemperatureF() {
+    float temp_f = dht_.getTemperature(false);
     if (dht_.getLastError() != dht_.OK) {
-    Serial.print("last error :");
-    Serial.println(dht_.getLastError());
+      Serial.print("DHT22 error: ");
+      Serial.println(dht_.getLastError());
+      return NAN;
     }
     Serial.print("t=");Serial.println(temp_f,1);Serial.println();
-    return;
+    return temp_f;
   }
 
-  void readHumidity() {
-    humidity = dht_.getHumidity();
+  float readHumidity() {
+    float humidity = dht_.getHumidity();
     if (dht_.getLastError() != dht_.OK) {
-    Serial.print("last error :");
-    Serial.println(dht_.getLastError());
+      Serial.print("DHT22 error: ");
+      Serial.println(dht_.getLastError());
+      return NAN;
     }
     Serial.print("h=");Serial.print(humidity,1);Serial.println();
-    return;
+    return humidity;
   }
 
-  void readTemperatureC2() {
+  float readTemperatureC2() {
     ds_sensor_.requestTemperatures();
-    temp_c2 = ds_sensor_.getTempCByIndex(0);
+    float temp_c2 = ds_sensor_.getTempCByIndex(0);
     Serial.print("Temperature: ");Serial.print(temp_c2);Serial.print("deg C");Serial.println();
-    return;
+    return temp_c2;
   }
 };
 
@@ -68,6 +68,14 @@ public:
 // Global HTTP server on port 80 and weather station instance
 ESP8266WebServer server(80);
 WeatherSensors weather_station(DHTPIN, ONE_WIRE_BUS);
+
+void sendReading(float value, float minimum, float maximum, const char* label, const char* suffix) {
+  if (!(value >= minimum && value <= maximum)) {
+    server.send(503, "text/plain", "Sensor reading unavailable");
+    return;
+  }
+  server.send(200, "text/plain", String(label) + String(value) + suffix);
+}
 
 void handle_root() {
   server.send(200, "text/plain", "Hello from the weather esp8266, read from /temp, /temp2, or /humidity");
@@ -103,24 +111,18 @@ void setup(void)
   // Website response setup
   server.on("/", handle_root);
   
-  server.on("/temp", [](){  // if you add this subdirectory to your webserver call, you get text below :)
-    weather_station.readTemperatureF();       // read sensor
-    webString="Temperature: "+String(temp_f);   // Arduino has a hard time with float to string
-    server.send(200, "text/plain", webString);            // send to someones browser when asked
+  server.on("/temp", [](){
+    sendReading(weather_station.readTemperatureF(), -40.0f, 176.0f, "Temperature: ", "");
   });
 
-  server.on("/humidity", [](){  // if you add this subdirectory to your webserver call, you get text below :)
-    weather_station.readHumidity();           // read sensor
-    webString="Humidity: "+String(humidity)+"%";
-    server.send(200, "text/plain", webString);               // send to someones browser when asked
+  server.on("/humidity", [](){
+    sendReading(weather_station.readHumidity(), 0.0f, 100.0f, "Humidity: ", "%");
   });
 
-  server.on("/temp2", [](){  // if you add this subdirectory to your webserver call, you get text below :)
-    weather_station.readTemperatureC2();           // read sensor
-    webString="Temperature 2: "+String(temp_c2);
-    server.send(200, "text/plain", webString);               // send to someones browser when asked
+  server.on("/temp2", [](){
+    sendReading(weather_station.readTemperatureC2(), -55.0f, 125.0f, "Temperature 2: ", "");
   });
-  
+
   Serial.println("Website responses configured");
   
   server.begin();
