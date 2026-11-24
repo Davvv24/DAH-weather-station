@@ -90,15 +90,19 @@ class Display(object):
 			failed = self.sensor.failed
 
 		clock = datetime.now().strftime("%H:%M:%S")
+		print(f"Time: {clock}")
 		if sample is None:
 			top = "No valid data" if failed else "Waiting for data"
 			bottom = clock
+			print(f"{top}")
 		else:
 			_, temp, temp2, humidity = sample
 			top = f"{temp:.1f}C {temp2:.2f}C"
 			humidity_text = f"{humidity:.2f}%"
 			gap = ("*" if failed else " ").rjust(8 - len(humidity_text))
 			bottom = f"{humidity_text}{gap}{clock}"
+			print(f"Temperatures: {temp:.1f}C {temp2:.2f}C")
+			print(f"Humidity: {humidity:.2f}")
 
 		message = f"{top:<16}\n{bottom:<16}"
 		if message != self.last_message:
