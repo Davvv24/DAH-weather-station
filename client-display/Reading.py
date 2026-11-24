@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 
 class Reading(object):
 
-	def __init__(self, url: str = "http://192.168.0.7") -> None:
+	def __init__(self, url: str = "http://192.168.0.12") -> None:
 		self.base_url = url
 		self.history = []
 		self.history_lock = Lock()
@@ -60,7 +60,7 @@ class Reading(object):
 				if stop.is_set():
 					return
 				timestamp, temp, temp2, humidity = sample
-				with open("heatgun_readings.csv", mode="a") as csv_file:
+				with open("../data/readings.csv", mode="a") as csv_file:
 					csv_file.write(f"{timestamp:%H:%M:%S},{temp:.1f},{temp2:.2f},{humidity:.2f}%\n")
 			except (OSError, HTTPException, ValueError) as error:
 				with self.history_lock:
