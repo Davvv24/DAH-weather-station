@@ -2,3 +2,4 @@ board
 busio
 adafruit-circuitpython-charlcd
 urllib
+matplotlib
